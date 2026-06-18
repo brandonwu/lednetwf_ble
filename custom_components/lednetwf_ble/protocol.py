@@ -542,6 +542,34 @@ def build_color_command_0x3B(r: int, g: int, b: int, brightness: int = 100) -> b
     return wrap_command(raw_cmd, cmd_family=0x0b)
 
 
+def build_color_command_0x3B_hsv_bytes(r: int, g: int, b: int, brightness: int = 100) -> bytearray:
+    """
+    Build product 0x27 solid-color command.
+
+    Captured format:
+        3B A1 HH SS VV 00 00 00 00 1E 00 00 checksum
+
+    HH is hue / 2 on a 0-180 byte scale, SS and VV are percentages.
+    """
+    h, s, _v = rgb_to_hsv(r, g, b)
+    brightness = max(0, min(100, brightness))
+    hue = int(round(h / 2)) & 0xFF
+
+    raw_cmd = bytearray([
+        0x3B,
+        0xA1,
+        hue,
+        s & 0xFF,
+        brightness & 0xFF,
+        0x00, 0x00,
+        0x00, 0x00,
+        0x1E,
+        0x00, 0x00,
+    ])
+    raw_cmd.append(calculate_checksum(raw_cmd))
+    return wrap_command(raw_cmd, cmd_family=0x0b)
+
+
 def build_color_command_0x31(r: int, g: int, b: int, ww: int = 0, cw: int = 0) -> bytearray:
     """
     Build color command using 0x31 format (9-byte format with WW+CW).
@@ -1828,7 +1856,7 @@ def parse_manufacturer_data(
 
             if mode_type == 0x61:
                 # Color or white mode
-                if sub_mode in (0xF0, 0x01, 0x0B):
+                if sub_mode in (0xF0, 0x01, 0x0B) or (product_id == 0x27 and sub_mode == 0x16):
                     # RGB mode (0xF0=RGB, 0x01/0x0B may be effects/music mode but show as RGB)
                     color_mode = 'rgb'
                     rgb = (data[18], data[19], data[20])

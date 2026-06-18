@@ -249,6 +249,11 @@ class LEDNetWFDevice:
         return bool(self._capabilities.get("has_rgb"))
 
     @property
+    def uses_0x3b_hsv_color(self) -> bool:
+        """Return True if device uses the captured 0x3B A1 HSV-byte color command."""
+        return bool(self._capabilities.get("uses_0x3b_hsv_color"))
+
+    @property
     def has_color_temp(self) -> bool:
         """Return True if device supports color temperature."""
         return bool(self._capabilities.get("has_ww") or self._capabilities.get("has_cw"))
@@ -872,6 +877,20 @@ class LEDNetWFDevice:
 
         self._is_on = result["is_on"]
 
+        if self.uses_0x3b_hsv_color and not result["is_on"]:
+            _LOGGER.debug(
+                "Product 0x27 off-state response received; preserving last color/brightness"
+            )
+            self._notify_callbacks()
+            return
+
+        if (
+            self.uses_0x3b_hsv_color
+            and result["mode_type"] == 0x61
+            and result["sub_mode"] == 0x16
+        ):
+            result["is_rgb_mode"] = True
+
         # Debug: trace which condition will match
         _LOGGER.debug(
             "State parse conditions: is_effect=%s, is_white=%s, is_rgb=%s, "
@@ -1395,6 +1414,15 @@ class LEDNetWFDevice:
             )
             _LOGGER.debug(
                 "IOTBT device: RGB=(%d,%d,%d), brightness=%d%% -> hue-based color",
+                rgb[0], rgb[1], rgb[2], brightness_pct
+            )
+        elif self.uses_0x3b_hsv_color:
+            brightness_pct = max(1, round(brightness * 100 / 255)) if brightness > 0 else 0
+            packet = protocol.build_color_command_0x3B_hsv_bytes(
+                rgb[0], rgb[1], rgb[2], brightness_pct
+            )
+            _LOGGER.debug(
+                "0x3B HSV-byte color command: RGB=(%d,%d,%d), brightness=%d%%",
                 rgb[0], rgb[1], rgb[2], brightness_pct
             )
         elif eff_type == EffectType.SIMPLE:
@@ -2134,6 +2162,11 @@ class LEDNetWFDevice:
                 "[%s] BLE version from manufacturer data: %d",
                 self._name, self._ble_version
             )
+
+        if self.uses_0x3b_hsv_color and result.get("power_state") is False:
+            if changed:
+                self._notify_callbacks()
+            return changed
 
         # Color mode and associated values
         color_mode = result.get("color_mode")
