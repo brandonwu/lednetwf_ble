@@ -15,7 +15,6 @@ from homeassistant.components.light import (
     LightEntityFeature,
 )
 from homeassistant.config_entries import ConfigEntry
-from homeassistant.const import ATTR_TRANSITION
 from homeassistant.core import HomeAssistant, callback
 from homeassistant.helpers.device_registry import DeviceInfo
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
@@ -24,6 +23,8 @@ from .const import DOMAIN
 from .device import LEDNetWFDevice
 
 _LOGGER = logging.getLogger(__name__)
+
+ATTR_TRANSITION = "transition"
 
 
 async def async_setup_entry(
