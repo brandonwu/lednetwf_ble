@@ -592,6 +592,38 @@ def build_color_command_0x3B_hsv_bytes(
     return wrap_command(raw_cmd, cmd_family=0x0b)
 
 
+def build_white_command_0x3B(
+    brightness: int = 100,
+    transition: float | None = None,
+) -> bytearray:
+    """
+    Build product 0x27 pure-white command.
+
+    Captured format:
+        3B B1 00 00 00 00 VV GG GG GG 00 00 checksum
+
+    VV is white brightness percentage. GG GG GG is the 10ms
+    gradient/transition field; the app default is 0x00001e.
+    """
+    brightness = max(0, min(100, brightness))
+    gradient = transition_seconds_to_ticks(transition, default_ticks=0x1E)
+
+    raw_cmd = bytearray([
+        0x3B,
+        0xB1,
+        0x00, 0x00,
+        0x00,
+        0x00,
+        brightness & 0xFF,
+        (gradient >> 16) & 0xFF,
+        (gradient >> 8) & 0xFF,
+        gradient & 0xFF,
+        0x00, 0x00,
+    ])
+    raw_cmd.append(calculate_checksum(raw_cmd))
+    return wrap_command(raw_cmd, cmd_family=0x0b)
+
+
 def build_color_command_0x31(r: int, g: int, b: int, ww: int = 0, cw: int = 0) -> bytearray:
     """
     Build color command using 0x31 format (9-byte format with WW+CW).
@@ -1869,6 +1901,7 @@ def parse_manufacturer_data(
         rgb = None
         color_temp_percent = None
         brightness_percent = None
+        white_value = None
         effect_id = None
         effect_speed = None
 
@@ -1879,10 +1912,18 @@ def parse_manufacturer_data(
             if mode_type == 0x61:
                 # Color or white mode
                 if sub_mode in (0xF0, 0x01, 0x0B) or (product_id == 0x27 and sub_mode == 0x16):
-                    # RGB mode (0xF0=RGB, 0x01/0x0B may be effects/music mode but show as RGB)
-                    color_mode = 'rgb'
                     rgb = (data[18], data[19], data[20])
-                    _LOGGER.debug("%sManu data RGB mode: rgb=%s", log_prefix, rgb)
+                    if product_id == 0x27 and rgb == (0, 0, 0) and data[21] > 0:
+                        color_mode = 'white'
+                        white_value = data[21]
+                        _LOGGER.debug(
+                            "%sManu data 0x27 white mode: brightness=%d",
+                            log_prefix, white_value
+                        )
+                    else:
+                        # RGB mode (0xF0=RGB, 0x01/0x0B may be effects/music mode but show as RGB)
+                        color_mode = 'rgb'
+                        _LOGGER.debug("%sManu data RGB mode: rgb=%s", log_prefix, rgb)
                 elif sub_mode == 0x0F:
                     # White/CCT mode
                     color_mode = 'cct'
@@ -2005,6 +2046,7 @@ def parse_manufacturer_data(
             "rgb": rgb,
             "color_temp_percent": color_temp_percent,
             "brightness_percent": brightness_percent,
+            "white_value": white_value,
             "effect_id": effect_id,
             "effect_speed": effect_speed,
         }
@@ -2019,6 +2061,8 @@ def parse_manufacturer_data(
         )
         if color_mode == "rgb":
             _LOGGER.debug("%s  RGB state: rgb=%s", log_prefix, rgb)
+        elif color_mode == "white":
+            _LOGGER.debug("%s  White state: brightness=%s", log_prefix, white_value)
         elif color_mode == "cct":
             _LOGGER.debug("%s  CCT state: temp_pct=%s%%, bright_pct=%s%%",
                           log_prefix, color_temp_percent, brightness_percent)

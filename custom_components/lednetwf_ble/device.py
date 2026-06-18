@@ -87,6 +87,7 @@ class LEDNetWFDevice:
         self._brightness: int = 255  # 0-255
         self._rgb: tuple[int, int, int] | None = None
         self._color_temp_kelvin: int | None = None
+        self._white_mode: bool = False
         self._effect: str | None = None
         self._effect_speed: int = DEFAULT_EFFECT_SPEED  # 0-100
 
@@ -252,6 +253,21 @@ class LEDNetWFDevice:
     def uses_0x3b_hsv_color(self) -> bool:
         """Return True if device uses the captured 0x3B A1 HSV-byte color command."""
         return bool(self._capabilities.get("uses_0x3b_hsv_color"))
+
+    @property
+    def uses_0x3b_white_color(self) -> bool:
+        """Return True if device uses the captured 0x3B B1 pure-white command."""
+        return bool(self._capabilities.get("uses_0x3b_white_color"))
+
+    @property
+    def has_white_mode(self) -> bool:
+        """Return True if device has a HA WHITE-mode control path."""
+        return self.uses_0x3b_white_color
+
+    @property
+    def is_white_mode(self) -> bool:
+        """Return True if the last known static mode is pure white."""
+        return self._white_mode
 
     @property
     def has_color_temp(self) -> bool:
@@ -889,7 +905,16 @@ class LEDNetWFDevice:
             and result["mode_type"] == 0x61
             and result["sub_mode"] == 0x16
         ):
-            result["is_rgb_mode"] = True
+            if (
+                result["r"] == 0
+                and result["g"] == 0
+                and result["b"] == 0
+                and result["ww"] > 0
+            ):
+                result["is_white_mode"] = True
+                result["is_rgb_mode"] = False
+            else:
+                result["is_rgb_mode"] = True
 
         # Debug: trace which condition will match
         _LOGGER.debug(
@@ -912,6 +937,7 @@ class LEDNetWFDevice:
             else:
                 self._effect = self._effect_id_to_name(result["effect_id"])
             self._color_temp_kelvin = None
+            self._white_mode = False
 
             if self.effect_type == EffectType.SYMPHONY and self.has_ic_config:
                 # True Symphony devices (0xA1-0xAD) effect mode:
@@ -940,10 +966,22 @@ class LEDNetWFDevice:
                           result["effect_id"], self._brightness, self._effect_speed,
                           result["value1"], result["r"], result["g"])
 
+        elif self.uses_0x3b_white_color and result.get("is_white_mode"):
+            self._effect = None
+            self._rgb = None
+            self._color_temp_kelvin = None
+            self._white_mode = True
+            self._brightness = result["ww"]
+            _LOGGER.debug(
+                "0x3B white mode: brightness=%d (warm byte=%d)",
+                self._brightness, result["ww"]
+            )
+
         elif result.get("is_white_mode"):
             # White/CCT mode - brightness from value1 (byte 5), scaled 0-100 → 0-255
             self._effect = None
             self._rgb = None
+            self._white_mode = False
             self._brightness = int(result["value1"] * 255 / 100)
             # Color temp from byte 9 (ww position), 0-100%
             # Per protocol: 0% = 2700K (warm), 100% = 6500K (cool)
@@ -960,6 +998,7 @@ class LEDNetWFDevice:
             self._brightness = max(r, 1) if r > 0 else 0
             self._rgb = None
             self._color_temp_kelvin = None
+            self._white_mode = False
             self._effect = None
             _LOGGER.debug("Dimmer mode (0x61): R=%d -> brightness=%d",
                           r, self._brightness)
@@ -970,6 +1009,7 @@ class LEDNetWFDevice:
             # sub_mode often echoes power state (0x23=ON, 0x24=OFF) rather than mode info
             # Must check BEFORE is_rgb_mode since SIMPLE sub_modes don't match standard RGB sub_modes
             self._color_temp_kelvin = None
+            self._white_mode = False
             # Don't clear effect for SIMPLE devices - they report 0x61 even when running effects
 
             # Extract color order from upper nibble if device supports it
@@ -1007,6 +1047,7 @@ class LEDNetWFDevice:
             # Device reports this on power-on before any color has been set
             # Treat as RGB mode with current RGB values (usually black)
             self._color_temp_kelvin = None
+            self._white_mode = False
             r, g, b = result["r"], result["g"], result["b"]
             h, s, v = protocol.rgb_to_hsv(r, g, b)
             brightness_raw = round(v * 255 / 100)
@@ -1041,6 +1082,7 @@ class LEDNetWFDevice:
             # RGB mode - brightness derived from RGB via HSV conversion
             self._effect = None
             self._color_temp_kelvin = None
+            self._white_mode = False
             r, g, b = result["r"], result["g"], result["b"]
             # Device returns RGB pre-scaled by brightness. Extract H, S, V
             # then reconstruct "pure" color at full brightness for the color picker.
@@ -1080,6 +1122,7 @@ class LEDNetWFDevice:
             effect_id = result["sub_mode"]
             self._effect = SYMPHONY_SETTLED_EFFECTS.get(effect_id)
             self._color_temp_kelvin = None
+            self._white_mode = False
 
             r, g, b = result["r"], result["g"], result["b"]
             # Derive brightness from RGB via HSV
@@ -1469,6 +1512,34 @@ class LEDNetWFDevice:
             self._brightness = brightness
             self._effect = None  # Clear effect when setting color
             self._color_temp_kelvin = None
+            self._white_mode = False
+            self._notify_callbacks()
+            return True
+        return False
+
+    async def set_white(
+        self, brightness: int = 255, transition: float | None = None
+    ) -> bool:
+        """Set pure-white mode for product 0x27."""
+        if not self.has_white_mode:
+            _LOGGER.warning("Device %s does not support pure white mode", self._name)
+            return False
+
+        brightness_pct = max(1, round(brightness * 100 / 255)) if brightness > 0 else 0
+        packet = protocol.build_white_command_0x3B(
+            brightness_pct, transition=transition
+        )
+        _LOGGER.debug(
+            "0x3B white command: brightness=%d%%, transition=%s",
+            brightness_pct, transition
+        )
+
+        if await self._send_command(packet):
+            self._brightness = brightness
+            self._rgb = None
+            self._color_temp_kelvin = None
+            self._white_mode = True
+            self._effect = None
             self._notify_callbacks()
             return True
         return False
@@ -1517,6 +1588,7 @@ class LEDNetWFDevice:
             self._brightness = brightness
             self._effect = None
             self._rgb = None
+            self._white_mode = False
             self._notify_callbacks()
             return True
         return False
@@ -1544,6 +1616,7 @@ class LEDNetWFDevice:
             self._brightness = brightness
             self._rgb = None
             self._color_temp_kelvin = None
+            self._white_mode = False
             self._effect = None
             self._notify_callbacks()
             return True
@@ -1664,6 +1737,7 @@ class LEDNetWFDevice:
             self._effect = effect_name
             self._effect_speed = speed
             self._brightness = brightness
+            self._white_mode = False
             self._notify_callbacks()
             return True
         return False
@@ -2013,6 +2087,7 @@ class LEDNetWFDevice:
             self._effect = "Candle Mode"
             self._effect_speed = speed
             self._brightness = brightness
+            self._white_mode = False
             self._notify_callbacks()
             return True
         return False
@@ -2074,6 +2149,7 @@ class LEDNetWFDevice:
             if enable:
                 self._effect = "Sound Reactive"
                 self._effect_speed = sensitivity  # Track sensitivity as speed
+                self._white_mode = False
             else:
                 self._effect = None
             self._notify_callbacks()
@@ -2201,14 +2277,38 @@ class LEDNetWFDevice:
                 else:
                     pure_rgb = rgb
 
-                if pure_rgb != self._rgb or new_brightness != self._brightness:
+                if (
+                    pure_rgb != self._rgb
+                    or new_brightness != self._brightness
+                    or self._white_mode
+                    or self._color_temp_kelvin is not None
+                    or self._effect is not None
+                ):
                     self._rgb = pure_rgb
                     self._brightness = new_brightness
                     self._color_temp_kelvin = None  # Clear CCT when in RGB mode
+                    self._white_mode = False
                     self._effect = None  # Clear effect when in RGB mode
                     changed = True
                     _LOGGER.debug("Advertisement updated RGB: device_rgb=(%d,%d,%d), pure_rgb=%s, brightness=%d (HSV v=%d)",
                                   r, g, b, self._rgb, self._brightness, v)
+
+        elif color_mode == "white":
+            white_value = result.get("white_value")
+            if white_value is not None and self._brightness != white_value:
+                self._brightness = white_value
+                changed = True
+
+            if (
+                not self._white_mode
+                or self._rgb is not None
+                or self._color_temp_kelvin is not None
+            ):
+                self._white_mode = True
+                self._rgb = None
+                self._color_temp_kelvin = None
+                self._effect = None
+                changed = True
 
         elif color_mode == "cct":
             # CCT/White mode - update color temperature
@@ -2232,6 +2332,7 @@ class LEDNetWFDevice:
 
             if changed:
                 self._rgb = None  # Clear RGB when in CCT mode
+                self._white_mode = False
                 self._effect = None  # Clear effect when in CCT mode
                 _LOGGER.debug("Advertisement updated CCT: %dK, brightness: %d",
                               self._color_temp_kelvin, self._brightness)

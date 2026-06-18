@@ -9,6 +9,7 @@ from homeassistant.components.light import (
     ATTR_COLOR_TEMP_KELVIN,
     ATTR_EFFECT,
     ATTR_RGB_COLOR,
+    ATTR_WHITE,
     ColorMode,
     LightEntity,
     LightEntityFeature,
@@ -68,6 +69,8 @@ class LEDNetWFLight(LightEntity):
             color_modes.add(ColorMode.RGB)
         if device.has_color_temp:
             color_modes.add(ColorMode.COLOR_TEMP)
+        if device.has_white_mode:
+            color_modes.add(ColorMode.WHITE)
 
         # If no color modes, at least support brightness
         if not color_modes:
@@ -182,6 +185,7 @@ class LEDNetWFLight(LightEntity):
         # Capabilities (useful for debugging)
         attrs["has_rgb"] = self._device.has_rgb
         attrs["has_color_temp"] = self._device.has_color_temp
+        attrs["has_white_mode"] = self._device.has_white_mode
         if self._device.has_builtin_mic:
             attrs["has_builtin_mic"] = True
 
@@ -221,6 +225,8 @@ class LEDNetWFLight(LightEntity):
             return ColorMode.BRIGHTNESS
         if self._device.color_temp_kelvin and self._device.has_color_temp:
             return ColorMode.COLOR_TEMP
+        if self._device.is_white_mode and self._device.has_white_mode:
+            return ColorMode.WHITE
         if self._device.rgb_color and self._device.has_rgb:
             return ColorMode.RGB
         if ColorMode.BRIGHTNESS in self._attr_supported_color_modes:
@@ -233,6 +239,11 @@ class LEDNetWFLight(LightEntity):
         _LOGGER.debug("turn_on called with kwargs: %s", kwargs)
 
         transition = kwargs.get(ATTR_TRANSITION)
+        white_command_follows = ATTR_WHITE in kwargs or (
+            ATTR_BRIGHTNESS in kwargs
+            and self._device.is_white_mode
+            and self._device.has_white_mode
+        )
         rgb_command_follows = ATTR_RGB_COLOR in kwargs or (
             ATTR_BRIGHTNESS in kwargs
             and self._device.rgb_color
@@ -242,7 +253,10 @@ class LEDNetWFLight(LightEntity):
         # Ensure light is on
         if not self._device.is_on:
             await self._device.turn_on(
-                transition=None if rgb_command_follows else transition
+                transition=(
+                    None if (rgb_command_follows or white_command_follows)
+                    else transition
+                )
             )
 
         # Determine brightness
@@ -260,6 +274,13 @@ class LEDNetWFLight(LightEntity):
         # Handle color temperature
         if ATTR_COLOR_TEMP_KELVIN in kwargs:
             await self._device.set_color_temp(kwargs[ATTR_COLOR_TEMP_KELVIN], brightness)
+            return
+
+        # Handle pure white mode
+        if ATTR_WHITE in kwargs:
+            white = kwargs[ATTR_WHITE]
+            white_brightness = brightness if white is True else int(white)
+            await self._device.set_white(white_brightness, transition=transition)
             return
 
         # Handle RGB color
@@ -283,6 +304,8 @@ class LEDNetWFLight(LightEntity):
                 await self._device.set_color_temp(
                     self._device.color_temp_kelvin, brightness
                 )
+            elif self._device.is_white_mode and self._device.has_white_mode:
+                await self._device.set_white(brightness, transition=transition)
             elif self._device.rgb_color and self._device.has_rgb:
                 await self._device.set_rgb_color(
                     self._device.rgb_color, brightness, transition=transition
