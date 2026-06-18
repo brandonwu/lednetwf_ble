@@ -1290,39 +1290,52 @@ class LEDNetWFDevice:
 
     # ----- Public command methods -----
 
-    async def turn_on(self) -> bool:
+    async def turn_on(self, transition: float | None = None) -> bool:
         """Turn on the device."""
         if self.is_iotbt_segment:
             # IOTBT segment-based variant uses standard 0x3B power command
-            packet = protocol.build_power_command_0x3B(turn_on=True)
+            packet = protocol.build_power_command_0x3B(
+                turn_on=True, transition=transition
+            )
         elif self.is_iotbt:
             # Standard IOTBT devices use 0x71 power command format
             packet = protocol.build_iotbt_power_command(turn_on=True)
         else:
-            packet = protocol.build_power_command_0x3B(turn_on=True)
+            packet = protocol.build_power_command_0x3B(
+                turn_on=True, transition=transition
+            )
         if await self._send_command(packet):
             self._is_on = True
             self._notify_callbacks()
             return True
         return False
 
-    async def turn_off(self) -> bool:
+    async def turn_off(self, transition: float | None = None) -> bool:
         """Turn off the device."""
         if self.is_iotbt_segment:
             # IOTBT segment-based variant uses standard 0x3B power command
-            packet = protocol.build_power_command_0x3B(turn_on=False)
+            packet = protocol.build_power_command_0x3B(
+                turn_on=False, transition=transition
+            )
         elif self.is_iotbt:
             # Standard IOTBT devices use 0x71 power command format
             packet = protocol.build_iotbt_power_command(turn_on=False)
         else:
-            packet = protocol.build_power_command_0x3B(turn_on=False)
+            packet = protocol.build_power_command_0x3B(
+                turn_on=False, transition=transition
+            )
         if await self._send_command(packet):
             self._is_on = False
             self._notify_callbacks()
             return True
         return False
 
-    async def set_rgb_color(self, rgb: tuple[int, int, int], brightness: int = 255) -> bool:
+    async def set_rgb_color(
+        self,
+        rgb: tuple[int, int, int],
+        brightness: int = 255,
+        transition: float | None = None,
+    ) -> bool:
         """Set RGB color.
 
         Args:
@@ -1419,11 +1432,11 @@ class LEDNetWFDevice:
         elif self.uses_0x3b_hsv_color:
             brightness_pct = max(1, round(brightness * 100 / 255)) if brightness > 0 else 0
             packet = protocol.build_color_command_0x3B_hsv_bytes(
-                rgb[0], rgb[1], rgb[2], brightness_pct
+                rgb[0], rgb[1], rgb[2], brightness_pct, transition=transition
             )
             _LOGGER.debug(
-                "0x3B HSV-byte color command: RGB=(%d,%d,%d), brightness=%d%%",
-                rgb[0], rgb[1], rgb[2], brightness_pct
+                "0x3B HSV-byte color command: RGB=(%d,%d,%d), brightness=%d%%, transition=%s",
+                rgb[0], rgb[1], rgb[2], brightness_pct, transition
             )
         elif eff_type == EffectType.SIMPLE:
             # SIMPLE devices use 0x31 command format (9-byte direct RGB)

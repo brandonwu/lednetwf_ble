@@ -27,6 +27,14 @@ def calculate_checksum(data: bytes) -> int:
     return sum(data) & 0xFF
 
 
+def transition_seconds_to_ticks(transition: float | None, default_ticks: int) -> int:
+    """Convert Home Assistant transition seconds to 10ms protocol ticks."""
+    if transition is None:
+        return default_ticks
+    ticks = round(max(0.0, transition) * 100)
+    return min(ticks, 0xFFFFFF)
+
+
 # =============================================================================
 # TRANSPORT LAYER
 # =============================================================================
@@ -123,19 +131,24 @@ def kelvin_to_ww_cw(kelvin: int, brightness: int = 255) -> Tuple[int, int]:
 # POWER COMMANDS
 # =============================================================================
 
-def build_power_command_0x3B(turn_on: bool) -> bytearray:
+def build_power_command_0x3B(
+    turn_on: bool, transition: float | None = None
+) -> bytearray:
     """
     Build power command using 0x3B format (BLE v5+).
 
-    Format: [0x3B, mode, 0, 0, 0, 0, 0, 0, 0, time_lo, 0, 0, checksum]
+    Format: [0x3B, mode, 0, 0, 0, 0, 0, gradient(3), delay(2), checksum]
     Mode: 0x23 = ON, 0x24 = OFF
     """
     mode = 0x23 if turn_on else 0x24
+    gradient = transition_seconds_to_ticks(transition, default_ticks=0x32)
     raw_cmd = bytearray([
         0x3B, mode,
         0x00, 0x00, 0x00,  # HSV placeholder
         0x00, 0x00,        # Params
-        0x00, 0x00, 0x32,  # RGB + time (50ms)
+        (gradient >> 16) & 0xFF,
+        (gradient >> 8) & 0xFF,
+        gradient & 0xFF,
         0x00, 0x00
     ])
     raw_cmd.append(calculate_checksum(raw_cmd))
@@ -542,18 +555,26 @@ def build_color_command_0x3B(r: int, g: int, b: int, brightness: int = 100) -> b
     return wrap_command(raw_cmd, cmd_family=0x0b)
 
 
-def build_color_command_0x3B_hsv_bytes(r: int, g: int, b: int, brightness: int = 100) -> bytearray:
+def build_color_command_0x3B_hsv_bytes(
+    r: int,
+    g: int,
+    b: int,
+    brightness: int = 100,
+    transition: float | None = None,
+) -> bytearray:
     """
     Build product 0x27 solid-color command.
 
     Captured format:
-        3B A1 HH SS VV 00 00 00 00 1E 00 00 checksum
+        3B A1 HH SS VV 00 00 GG GG GG 00 00 checksum
 
     HH is hue / 2 on a 0-180 byte scale, SS and VV are percentages.
+    GG GG GG is the 10ms gradient/transition field; the app default is 0x00001e.
     """
     h, s, _v = rgb_to_hsv(r, g, b)
     brightness = max(0, min(100, brightness))
     hue = int(round(h / 2)) & 0xFF
+    gradient = transition_seconds_to_ticks(transition, default_ticks=0x1E)
 
     raw_cmd = bytearray([
         0x3B,
@@ -562,8 +583,9 @@ def build_color_command_0x3B_hsv_bytes(r: int, g: int, b: int, brightness: int =
         s & 0xFF,
         brightness & 0xFF,
         0x00, 0x00,
-        0x00, 0x00,
-        0x1E,
+        (gradient >> 16) & 0xFF,
+        (gradient >> 8) & 0xFF,
+        gradient & 0xFF,
         0x00, 0x00,
     ])
     raw_cmd.append(calculate_checksum(raw_cmd))

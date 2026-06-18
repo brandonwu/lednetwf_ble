@@ -14,6 +14,7 @@ from homeassistant.components.light import (
     LightEntityFeature,
 )
 from homeassistant.config_entries import ConfigEntry
+from homeassistant.const import ATTR_TRANSITION
 from homeassistant.core import HomeAssistant, callback
 from homeassistant.helpers.device_registry import DeviceInfo
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
@@ -78,6 +79,7 @@ class LEDNetWFLight(LightEntity):
         features = LightEntityFeature(0)
         if device.has_effects:
             features |= LightEntityFeature.EFFECT
+        features |= LightEntityFeature.TRANSITION
         self._attr_supported_features = features
 
         # Color temp range
@@ -230,9 +232,18 @@ class LEDNetWFLight(LightEntity):
         """Turn the light on."""
         _LOGGER.debug("turn_on called with kwargs: %s", kwargs)
 
+        transition = kwargs.get(ATTR_TRANSITION)
+        rgb_command_follows = ATTR_RGB_COLOR in kwargs or (
+            ATTR_BRIGHTNESS in kwargs
+            and self._device.rgb_color
+            and self._device.has_rgb
+        )
+
         # Ensure light is on
         if not self._device.is_on:
-            await self._device.turn_on()
+            await self._device.turn_on(
+                transition=None if rgb_command_follows else transition
+            )
 
         # Determine brightness
         brightness = kwargs.get(ATTR_BRIGHTNESS)
@@ -253,7 +264,9 @@ class LEDNetWFLight(LightEntity):
 
         # Handle RGB color
         if ATTR_RGB_COLOR in kwargs:
-            await self._device.set_rgb_color(kwargs[ATTR_RGB_COLOR], brightness)
+            await self._device.set_rgb_color(
+                kwargs[ATTR_RGB_COLOR], brightness, transition=transition
+            )
             return
 
         # Just brightness change - resend current color/mode
@@ -271,13 +284,15 @@ class LEDNetWFLight(LightEntity):
                     self._device.color_temp_kelvin, brightness
                 )
             elif self._device.rgb_color and self._device.has_rgb:
-                await self._device.set_rgb_color(self._device.rgb_color, brightness)
+                await self._device.set_rgb_color(
+                    self._device.rgb_color, brightness, transition=transition
+                )
             elif self._device.has_dim:
                 await self._device.set_brightness(brightness)
 
     async def async_turn_off(self, **kwargs: Any) -> None:
         """Turn the light off."""
-        await self._device.turn_off()
+        await self._device.turn_off(transition=kwargs.get(ATTR_TRANSITION))
 
 
 class LEDNetWFBackgroundLight(LightEntity):
