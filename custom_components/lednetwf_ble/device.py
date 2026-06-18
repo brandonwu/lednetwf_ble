@@ -251,7 +251,7 @@ class LEDNetWFDevice:
 
     @property
     def uses_0x3b_hsv_color(self) -> bool:
-        """Return True if device uses the captured 0x3B A1 HSV-byte color command."""
+        """Return True if device uses the product-specific 0x3B color tail."""
         return bool(self._capabilities.get("uses_0x3b_hsv_color"))
 
     @property
@@ -1474,11 +1474,16 @@ class LEDNetWFDevice:
             )
         elif self.uses_0x3b_hsv_color:
             brightness_pct = max(1, round(brightness * 100 / 255)) if brightness > 0 else 0
-            packet = protocol.build_color_command_0x3B_hsv_bytes(
-                rgb[0], rgb[1], rgb[2], brightness_pct, transition=transition
+            packet = protocol.build_color_command_0x3B(
+                rgb[0],
+                rgb[1],
+                rgb[2],
+                brightness_pct,
+                transition=transition,
+                use_transition_tail=True,
             )
             _LOGGER.debug(
-                "0x3B HSV-byte color command: RGB=(%d,%d,%d), brightness=%d%%, transition=%s",
+                "0x3B product color command: RGB=(%d,%d,%d), brightness=%d%%, transition=%s",
                 rgb[0], rgb[1], rgb[2], brightness_pct, transition
             )
         elif eff_type == EffectType.SIMPLE:

@@ -228,7 +228,7 @@ def rgb_to_iotbt_hue(r: int, g: int, b: int) -> int:
         return 0
 
     # Convert RGB to HSV
-    h, s, v = rgb_to_hsv(r, g, b)
+    h, s, _v = rgb_to_hsv(r, g, b)
 
     # If saturation is too low (< 5%), treat as white
     # This threshold matches the old integration: sat < 0.05
@@ -453,7 +453,7 @@ def build_iotbt_segment_color_command(
         Wrapped command packet
     """
     # Convert RGB to HSV
-    h, s, v = rgb_to_hsv(r, g, b)
+    h, s, _v = rgb_to_hsv(r, g, b)
 
     # This device accepts angles 0-180 for hue
     # 0=red, ~60=green, ~120=blue
@@ -526,67 +526,57 @@ def build_iotbt_segment_effect_command(effect_id: int, speed: int = 50, brightne
 # COLOR COMMANDS
 # =============================================================================
 
-def build_color_command_0x3B(r: int, g: int, b: int, brightness: int = 100) -> bytearray:
+def build_color_command_0x3B(
+    r: int,
+    g: int,
+    b: int,
+    brightness: int = 100,
+    *,
+    transition: float | None = None,
+    use_transition_tail: bool = False,
+) -> bytearray:
     """
     Build color command using 0x3B format (BLE v5+, Symphony).
 
-    Uses HSV internally with RGB fallback in bytes 7-9.
+    Uses HSV internally with RGB fallback in bytes 7-9. Product 0x27 uses the
+    same packed HSV bytes, but bytes 7-9 are a 24-bit 10ms transition field.
     Brightness is 0-100 (percentage).
     """
-    h, s, v = rgb_to_hsv(r, g, b)
+    h, s, _v = rgb_to_hsv(r, g, b)
     # Use provided brightness, capped to 100
-    brightness = min(brightness, 100)
+    brightness = max(0, min(brightness, 100))
 
     # Pack hue (0-360) and saturation (0-100) into two bytes
     packed = (h << 7) | s
     hs_hi = (packed >> 8) & 0xFF
     hs_lo = packed & 0xFF
 
-    raw_cmd = bytearray([
-        0x3B,                  # Command opcode
-        0xA1,                  # Mode: solid color
-        hs_hi, hs_lo,          # Packed hue + saturation
-        brightness & 0xFF,     # Brightness (0-100)
-        0x00, 0x00,            # Params
-        r & 0xFF, g & 0xFF, b & 0xFF,  # RGB values
-        0x00, 0x00,            # Time (0 = instant, matches working old code)
-    ])
-    raw_cmd.append(calculate_checksum(raw_cmd))
-    return wrap_command(raw_cmd, cmd_family=0x0b)
-
-
-def build_color_command_0x3B_hsv_bytes(
-    r: int,
-    g: int,
-    b: int,
-    brightness: int = 100,
-    transition: float | None = None,
-) -> bytearray:
-    """
-    Build product 0x27 solid-color command.
-
-    Captured format:
-        3B A1 HH SS VV 00 00 GG GG GG 00 00 checksum
-
-    HH is hue / 2 on a 0-180 byte scale, SS and VV are percentages.
-    GG GG GG is the 10ms gradient/transition field; the app default is 0x00001e.
-    """
-    h, s, _v = rgb_to_hsv(r, g, b)
-    brightness = max(0, min(100, brightness))
-    hue = int(round(h / 2)) & 0xFF
-    gradient = transition_seconds_to_ticks(transition, default_ticks=0x1E)
+    if use_transition_tail:
+        gradient = transition_seconds_to_ticks(transition, default_ticks=0x1E)
+        tail = [
+            (gradient >> 16) & 0xFF,
+            (gradient >> 8) & 0xFF,
+            gradient & 0xFF,
+            0x00,
+            0x00,
+        ]
+    else:
+        tail = [
+            r & 0xFF,
+            g & 0xFF,
+            b & 0xFF,
+            0x00,
+            0x00,
+        ]
 
     raw_cmd = bytearray([
         0x3B,
         0xA1,
-        hue,
-        s & 0xFF,
+        hs_hi,
+        hs_lo,
         brightness & 0xFF,
         0x00, 0x00,
-        (gradient >> 16) & 0xFF,
-        (gradient >> 8) & 0xFF,
-        gradient & 0xFF,
-        0x00, 0x00,
+        *tail,
     ])
     raw_cmd.append(calculate_checksum(raw_cmd))
     return wrap_command(raw_cmd, cmd_family=0x0b)
